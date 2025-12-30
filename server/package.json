@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "Document Management System - Backend API",
   "main": "dist/server.js",
+  "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node --experimental-detect-module dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "lint": "eslint src/**/*.ts"
   },
