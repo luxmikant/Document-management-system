@@ -51,10 +51,11 @@ router.get('/:versionId/download', requireAuth, async (req: AuthRequest, res: Re
       return;
     }
 
+    const { preview } = req.query;
     const { stream, file } = await downloadFromGridFS(version.gridfsFileId);
 
     res.setHeader('Content-Type', version.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(version.originalFilename)}"`);
+    res.setHeader('Content-Disposition', `${preview ? 'inline' : 'attachment'}; filename="${encodeURIComponent(version.originalFilename)}"`);
     if (file.length) {
       res.setHeader('Content-Length', file.length);
     }

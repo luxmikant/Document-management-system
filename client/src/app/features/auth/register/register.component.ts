@@ -10,18 +10,54 @@ import { ToastService } from '../../../shared/services/toast.service';
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink],
   template: `
-    <div class="auth-container">
-      <div class="auth-card card">
-        <div class="card-body">
+    <div class="auth-page">
+      <div class="auth-side hide-mobile">
+        <div class="auth-side-content">
+          <div class="logo white">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+            </svg>
+            <span class="logo-text">DMS<span>Pro</span></span>
+          </div>
+          <h1>Start your <span>journey</span> with us today.</h1>
+          <p>Experience the most secure and intuitive document management platform ever built.</p>
+          
+          <div class="auth-features">
+            <div class="auth-feature">
+              <div class="feature-dot"></div>
+              <span>Free 14-day trial</span>
+            </div>
+            <div class="auth-feature">
+              <div class="feature-dot"></div>
+              <span>No credit card required</span>
+            </div>
+            <div class="auth-feature">
+              <div class="feature-dot"></div>
+              <span>Instant setup</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="auth-form-side">
+        <div class="auth-form-container">
           <div class="auth-header">
-            <h1>Create Account</h1>
-            <p class="text-secondary">Start managing your documents</p>
+            <div class="logo mobile-only">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+              </svg>
+              <span class="logo-text">DMS<span>Pro</span></span>
+            </div>
+            <h2>Create account</h2>
+            <p class="text-secondary">Join DMSPro and start organizing</p>
           </div>
           
-          <form (ngSubmit)="onSubmit()" #registerForm="ngForm">
+          <form (ngSubmit)="onSubmit()" #registerForm="ngForm" class="auth-form">
             <div class="form-row">
               <div class="form-group">
-                <label class="form-label" for="firstName">First Name</label>
+                <label class="form-label" for="firstName">First name</label>
                 <input
                   type="text"
                   id="firstName"
@@ -35,7 +71,7 @@ import { ToastService } from '../../../shared/services/toast.service';
               </div>
               
               <div class="form-group">
-                <label class="form-label" for="lastName">Last Name</label>
+                <label class="form-label" for="lastName">Last name</label>
                 <input
                   type="text"
                   id="lastName"
@@ -50,7 +86,7 @@ import { ToastService } from '../../../shared/services/toast.service';
             </div>
             
             <div class="form-group">
-              <label class="form-label" for="email">Email</label>
+              <label class="form-label" for="email">Email address</label>
               <input
                 type="email"
                 id="email"
@@ -59,7 +95,7 @@ import { ToastService } from '../../../shared/services/toast.service';
                 [(ngModel)]="email"
                 required
                 email
-                placeholder="you@example.com"
+                placeholder="name@company.com"
                 [disabled]="loading()"
               />
             </div>
@@ -85,7 +121,7 @@ import { ToastService } from '../../../shared/services/toast.service';
             
             <button 
               type="submit" 
-              class="btn btn-primary btn-lg w-full" 
+              class="btn btn-primary btn-lg w-full gradient-btn" 
               [disabled]="loading() || !registerForm.valid"
             >
               @if (loading()) {
@@ -105,45 +141,161 @@ import { ToastService } from '../../../shared/services/toast.service';
     </div>
   `,
   styles: [`
-    .auth-container {
-      min-height: calc(100vh - 120px);
+    .auth-page {
+      display: flex;
+      min-height: 100vh;
+      background: #fff;
+    }
+
+    .auth-side {
+      flex: 1;
+      background: #1e293b;
+      background-image: radial-gradient(circle at top right, rgba(132, 204, 22, 0.15), transparent 40%),
+                        linear-gradient(to bottom, #1e293b, #0f172a);
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1rem;
+      padding: 4rem;
+      color: #fff;
+      position: relative;
+      overflow: hidden;
     }
-    
-    .auth-card {
+
+    .auth-side-content {
+      max-width: 480px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .auth-side h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      line-height: 1.1;
+      margin: 2rem 0 1.5rem;
+      letter-spacing: -0.025em;
+    }
+
+    .auth-side h1 span {
+      color: var(--primary);
+    }
+
+    .auth-side p {
+      font-size: 1.125rem;
+      color: #94a3b8;
+      margin-bottom: 3rem;
+    }
+
+    .auth-features {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .auth-feature {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-weight: 500;
+    }
+
+    .feature-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--primary);
+      border-radius: 50%;
+      box-shadow: 0 0 12px var(--primary);
+    }
+
+    .auth-form-side {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .auth-form-container {
       width: 100%;
       max-width: 400px;
     }
-    
+
     .auth-header {
-      text-align: center;
-      margin-bottom: 1.5rem;
+      margin-bottom: 2.5rem;
     }
-    
-    .auth-header h1 {
-      font-size: 1.5rem;
+
+    .auth-header h2 {
+      font-size: 1.875rem;
       font-weight: 700;
       margin-bottom: 0.5rem;
+      letter-spacing: -0.025em;
     }
-    
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+
+    .logo.white { color: #fff; }
+    .logo-text { font-weight: 700; font-size: 1.25rem; }
+    .logo-text span { color: var(--primary); }
+
+    .mobile-only { display: none; }
+
+    @media (max-width: 992px) {
+      .hide-mobile { display: none; }
+      .mobile-only { display: flex; }
+    }
+
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
     .form-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.75rem;
+      gap: 1rem;
     }
-    
-    .w-full {
-      width: 100%;
+
+    .gradient-btn {
+      background: var(--primary-gradient);
+      border: none;
+      font-weight: 600;
+      height: 48px;
+      margin-top: 1rem;
     }
-    
+
+    .gradient-btn:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
     .auth-footer {
+      margin-top: 2rem;
       text-align: center;
-      margin-top: 1.5rem;
       font-size: 0.875rem;
-      color: var(--text-secondary);
+      color: #64748b;
+    }
+
+    .auth-footer a {
+      font-weight: 600;
+      color: var(--primary-dark);
+    }
+
+    .alert {
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .alert-error {
+      background: #fef2f2;
+      color: #ef4444;
+      border: 1px solid #fee2e2;
     }
   `]
 })
@@ -152,6 +304,7 @@ export class RegisterComponent {
   lastName = '';
   email = '';
   password = '';
+  confirmPassword = '';
   loading = signal(false);
   error = signal('');
 
@@ -162,7 +315,11 @@ export class RegisterComponent {
   ) {}
 
   onSubmit(): void {
-    if (!this.firstName || !this.lastName || !this.email || !this.password) return;
+    if (!this.firstName || !this.lastName || !this.email || !this.password || !this.confirmPassword) return;
+    if (this.password !== this.confirmPassword) {
+      this.error.set('Passwords do not match');
+      return;
+    }
     
     this.loading.set(true);
     this.error.set('');

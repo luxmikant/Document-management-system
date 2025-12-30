@@ -432,37 +432,46 @@ router.get('/dashboard', requireAuth, async (req: AuthRequest, res: Response): P
       { $limit: 10 }
     ]);
 
+    const stats = sizeStats[0] || {
+      totalSize: 0,
+      avgSize: 0,
+      maxSize: 0,
+      minSize: 0,
+      totalFiles: 0
+    };
+
     res.json({
-      recentFiles: recentFiles.map(doc => ({
+      recentDocuments: recentFiles.map(doc => ({
         id: doc._id,
         title: doc.title,
         originalFilename: doc.originalFilename,
         mimeType: doc.mimeType,
         size: doc.size,
         tags: doc.tags,
-        createdAt: doc.createdAt
+        createdAt: doc.createdAt,
+        currentVersionNumber: doc.currentVersionNumber
       })),
-      stats: sizeStats[0] || {
-        totalSize: 0,
-        avgSize: 0,
-        maxSize: 0,
-        minSize: 0,
-        totalFiles: 0
+      stats: {
+        totalDocuments: stats.totalFiles || 0,
+        totalSize: stats.totalSize || 0,
+        avgSize: stats.avgSize || 0
       },
       sizeGroups: sizeGroups.map(g => ({
-        range: g._id === 0 ? '0-100KB' :
+        _id: g._id,
+        label: g._id === 0 ? '0-100KB' :
                g._id === 102400 ? '100KB-1MB' :
                g._id === 1048576 ? '1MB-5MB' :
                g._id === 5242880 ? '5MB-10MB' : '10MB+',
-        count: g.count
+        count: g.count,
+        totalSize: g.files?.reduce((sum: number, f: any) => sum + (f.size || 0), 0) || 0
       })),
       typeGroups: typeGroups.map(g => ({
-        type: g._id,
+        _id: g._id,
         count: g.count,
         totalSize: g.totalSize
       })),
       topTags: tagGroups.map(g => ({
-        tag: g._id,
+        _id: g._id,
         count: g.count
       }))
     });
@@ -593,7 +602,7 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
 router.get('/:id/download', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { version } = req.query;
+    const { version, preview } = req.query;
     const userId = req.user!._id.toString();
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -631,9 +640,11 @@ router.get('/:id/download', requireAuth, async (req: AuthRequest, res: Response)
 
     res.set({
       'Content-Type': versionDoc.mimeType,
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(versionDoc.originalFilename)}"`,
-      'Content-Length': file.length
+      'Content-Disposition': `${preview ? 'inline' : 'attachment'}; filename="${encodeURIComponent(versionDoc.originalFilename)}"`
     });
+    if (file.length) {
+      res.setHeader('Content-Length', file.length);
+    }
 
     stream.pipe(res);
   } catch (error) {

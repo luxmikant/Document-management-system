@@ -180,9 +180,19 @@ export class DocumentService {
     return `${this.apiUrl}/${id}/download`;
   }
 
+  // Download document as Blob (for authenticated download)
+  downloadDocumentBlob(id: string): Observable<Blob> {
+    return this.http.get(`${this.apiUrl}/${id}/download`, { responseType: 'blob' });
+  }
+
   // Download specific version
   getVersionDownloadUrl(versionId: string): string {
     return `${environment.apiUrl}/versions/${versionId}/download`;
+  }
+
+  // Download version as Blob
+  downloadVersionBlob(versionId: string): Observable<Blob> {
+    return this.http.get(`${environment.apiUrl}/versions/${versionId}/download`, { responseType: 'blob' });
   }
 
   // === Permissions ===

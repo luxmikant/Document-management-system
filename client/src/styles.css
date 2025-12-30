@@ -1,8 +1,9 @@
 /* Global Styles - DMS */
 :root {
-  --primary: #3b82f6;
-  --primary-dark: #2563eb;
-  --primary-light: #93c5fd;
+  --primary: #84cc16; /* Lime 500 */
+  --primary-dark: #65a30d; /* Lime 600 */
+  --primary-light: #bef264; /* Lime 300 */
+  --primary-gradient: linear-gradient(135deg, #84cc16 0%, #22c55e 100%);
   --secondary: #64748b;
   --success: #22c55e;
   --danger: #ef4444;
@@ -14,8 +15,10 @@
   --border: #e2e8f0;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
   --radius: 8px;
   --radius-lg: 12px;
+  --radius-xl: 20px;
 }
 
 * {

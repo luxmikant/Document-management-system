@@ -1,15 +1,17 @@
-import { Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { Component, inject } from '@angular/core';
+import { RouterOutlet, Router, NavigationEnd } from '@angular/router';
 import { NavbarComponent } from './shared/components/navbar/navbar.component';
 import { ToastComponent } from './shared/components/toast/toast.component';
+import { filter } from 'rxjs';
+import { CommonModule } from '@angular/common';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, NavbarComponent, ToastComponent],
+  imports: [RouterOutlet, NavbarComponent, ToastComponent, CommonModule],
   template: `
-    <app-navbar />
-    <main class="main-content">
+    <app-navbar *ngIf="!isFullPage" />
+    <main [class.main-content]="!isFullPage">
       <router-outlet />
     </main>
     <app-toast />
@@ -27,4 +29,16 @@ import { ToastComponent } from './shared/components/toast/toast.component';
     }
   `]
 })
-export class AppComponent {}
+export class AppComponent {
+  private router = inject(Router);
+  isFullPage = false;
+
+  constructor() {
+    this.router.events.pipe(
+      filter(event => event instanceof NavigationEnd)
+    ).subscribe((event: any) => {
+      const url = event.urlAfterRedirects || event.url;
+      this.isFullPage = url === '/' || url === '/login' || url === '/register';
+    });
+  }
+}

@@ -14,7 +14,7 @@ import { AuthService } from '../../../core/services/auth.service';
             <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
             <polyline points="14,2 14,8 20,8"/>
           </svg>
-          <span>DMS</span>
+          <span>DMS<span>Pro</span></span>
         </a>
         
         @if (authService.isAuthenticated()) {
@@ -71,8 +71,16 @@ import { AuthService } from '../../../core/services/auth.service';
       gap: 0.5rem;
       font-weight: 700;
       font-size: 1.25rem;
-      color: var(--primary);
+      color: var(--text);
       text-decoration: none;
+    }
+
+    .navbar-brand span span {
+      color: var(--primary);
+    }
+    
+    .navbar-brand svg {
+      color: var(--primary);
     }
     
     .navbar-links {

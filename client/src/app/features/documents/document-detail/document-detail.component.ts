@@ -65,10 +65,9 @@ import { environment } from '../../../../environments/environment';
                   </div>
                   
                   <div class="document-actions">
-                    <a 
-                      [href]="getDownloadUrl()" 
+                    <button 
                       class="btn btn-primary"
-                      target="_blank"
+                      (click)="downloadFile()"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -76,7 +75,18 @@ import { environment } from '../../../../environments/environment';
                         <line x1="12" y1="15" x2="12" y2="3"/>
                       </svg>
                       Download
-                    </a>
+                    </button>
+                    
+                    <button 
+                      class="btn btn-outline"
+                      (click)="previewFile()"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                      Preview
+                    </button>
                     
                     @if (document()?.canEdit || document()?.isOwner) {
                       @if (!editing()) {
@@ -231,13 +241,12 @@ import { environment } from '../../../../environments/environment';
                         </div>
                         <div class="version-meta">
                           <span class="text-sm text-secondary">{{ formatFileSize(version.size) }}</span>
-                          <a 
-                            [href]="getVersionDownloadUrl(version._id)"
+                          <button 
                             class="btn btn-sm btn-outline"
-                            target="_blank"
+                            (click)="downloadVersion(version)"
                           >
                             Download
-                          </a>
+                          </button>
                         </div>
                       </div>
                     }
@@ -720,8 +729,53 @@ export class DocumentDetailComponent implements OnInit {
     return this.documentService.getDownloadUrl(doc.id || (doc as any)._id);
   }
 
+  downloadFile(): void {
+    const doc = this.document();
+    if (!doc) return;
+    
+    this.documentService.downloadDocumentBlob(doc.id || (doc as any)._id).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = doc.originalFilename;
+        link.click();
+        window.URL.revokeObjectURL(url);
+      },
+      error: () => this.toast.error('Failed to download file')
+    });
+  }
+
+  previewFile(): void {
+    const doc = this.document();
+    if (!doc) return;
+    
+    this.documentService.downloadDocumentBlob(doc.id || (doc as any)._id).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => window.URL.revokeObjectURL(url), 60000); // 1 minute cleanup
+      },
+      error: () => this.toast.error('Failed to preview file')
+    });
+  }
+
   getVersionDownloadUrl(versionId: string): string {
     return this.documentService.getVersionDownloadUrl(versionId);
+  }
+
+  downloadVersion(version: Version): void {
+    this.documentService.downloadVersionBlob(version._id).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = version.originalFilename;
+        link.click();
+        window.URL.revokeObjectURL(url);
+      },
+      error: () => this.toast.error('Failed to download version')
+    });
   }
 
   startEditing(): void {
