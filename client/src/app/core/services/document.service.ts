@@ -16,6 +16,20 @@ export interface UploadProgress {
   response?: UploadResponse;
 }
 
+export interface DashboardData {
+  recentFiles: Document[];
+  stats: {
+    totalSize: number;
+    avgSize: number;
+    maxSize: number;
+    minSize: number;
+    totalFiles: number;
+  };
+  sizeGroups: { range: string; count: number }[];
+  typeGroups: { type: string; count: number; totalSize: number }[];
+  topTags: { tag: string; count: number }[];
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -24,15 +38,38 @@ export class DocumentService {
 
   constructor(private http: HttpClient) {}
 
-  // List/search documents
-  getDocuments(params?: { q?: string; tags?: string; page?: number; limit?: number }): Observable<DocumentListResponse> {
+  // Get dashboard data (top 5 recent, stats, size groups)
+  getDashboard(): Observable<DashboardData> {
+    return this.http.get<DashboardData>(`${this.apiUrl}/dashboard`);
+  }
+
+  // List/search documents with sorting
+  getDocuments(params?: { 
+    q?: string; 
+    tags?: string; 
+    page?: number; 
+    limit?: number;
+    sortBy?: 'size' | 'createdAt' | 'title' | 'updatedAt';
+    order?: 'asc' | 'desc';
+  }): Observable<DocumentListResponse> {
     let httpParams = new HttpParams();
     if (params?.q) httpParams = httpParams.set('q', params.q);
     if (params?.tags) httpParams = httpParams.set('tags', params.tags);
     if (params?.page) httpParams = httpParams.set('page', params.page.toString());
     if (params?.limit) httpParams = httpParams.set('limit', params.limit.toString());
+    if (params?.sortBy) httpParams = httpParams.set('sortBy', params.sortBy);
+    if (params?.order) httpParams = httpParams.set('order', params.order);
     
     return this.http.get<DocumentListResponse>(this.apiUrl, { params: httpParams });
+  }
+
+  // Get shared documents
+  getSharedDocuments(params?: { page?: number; limit?: number }): Observable<DocumentListResponse> {
+    let httpParams = new HttpParams();
+    if (params?.page) httpParams = httpParams.set('page', params.page.toString());
+    if (params?.limit) httpParams = httpParams.set('limit', params.limit.toString());
+    
+    return this.http.get<DocumentListResponse>(`${this.apiUrl}/shared`, { params: httpParams });
   }
 
   // Get document details with versions
