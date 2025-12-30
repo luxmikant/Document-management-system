@@ -40,6 +40,22 @@ import { Document } from '../../../core/models';
             [(ngModel)]="tagFilter"
             (keyup.enter)="search()"
           />
+          <select class="form-input sort-select" [(ngModel)]="sortBy" (change)="search()">
+            <option value="createdAt">Sort by Date</option>
+            <option value="title">Sort by Name</option>
+            <option value="size">Sort by Size</option>
+          </select>
+          <button class="btn btn-icon" (click)="toggleSortOrder()" [title]="sortOrder === 'asc' ? 'Ascending' : 'Descending'">
+            @if (sortOrder === 'asc') {
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>
+              </svg>
+            } @else {
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>
+              </svg>
+            }
+          </button>
           <button class="btn btn-primary" (click)="search()">Search</button>
           @if (searchQuery || tagFilter) {
             <button class="btn btn-outline" (click)="clearFilters()">Clear</button>
@@ -174,11 +190,33 @@ import { Document } from '../../../core/models';
       width: 200px;
     }
     
+    .sort-select {
+      width: 140px;
+    }
+    
+    .btn-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    .btn-icon:hover {
+      background: var(--bg-secondary);
+    }
+    
     @media (max-width: 640px) {
       .search-inputs {
         flex-direction: column;
       }
-      .tags-filter {
+      .tags-filter, .sort-select {
         width: 100%;
       }
     }
@@ -306,6 +344,8 @@ export class DocumentListComponent implements OnInit {
   
   searchQuery = '';
   tagFilter = '';
+  sortBy: 'createdAt' | 'title' | 'size' = 'createdAt';
+  sortOrder: 'asc' | 'desc' = 'desc';
 
   constructor(private documentService: DocumentService) {}
 
@@ -320,7 +360,9 @@ export class DocumentListComponent implements OnInit {
       q: this.searchQuery || undefined,
       tags: this.tagFilter || undefined,
       page: this.pagination().page,
-      limit: this.pagination().limit
+      limit: this.pagination().limit,
+      sortBy: this.sortBy,
+      order: this.sortOrder
     }).subscribe({
       next: (response) => {
         this.documents.set(response.documents);
@@ -331,6 +373,11 @@ export class DocumentListComponent implements OnInit {
         this.loading.set(false);
       }
     });
+  }
+
+  toggleSortOrder(): void {
+    this.sortOrder = this.sortOrder === 'asc' ? 'desc' : 'asc';
+    this.search();
   }
 
   search(): void {
