@@ -1,8 +1,10 @@
 import mongoose from 'mongoose';
-import { GridFSBucket, ObjectId } from 'mongodb';
 import { Readable } from 'stream';
 
-let bucket: GridFSBucket;
+type Bucket = mongoose.mongo.GridFSBucket;
+type MongoObjectId = mongoose.mongo.ObjectId;
+
+let bucket: Bucket;
 
 // Initialize GridFS bucket after MongoDB connection
 export const initGridFS = (): void => {
@@ -10,14 +12,14 @@ export const initGridFS = (): void => {
   if (!db) {
     throw new Error('MongoDB connection not established');
   }
-  bucket = new GridFSBucket(db, {
+  bucket = new mongoose.mongo.GridFSBucket(db, {
     bucketName: 'documents'
   });
   console.log('✅ GridFS bucket initialized');
 };
 
 // Get the bucket instance
-export const getGridFSBucket = (): GridFSBucket => {
+export const getGridFSBucket = (): Bucket => {
   if (!bucket) {
     throw new Error('GridFS bucket not initialized. Call initGridFS first.');
   }
@@ -35,34 +37,46 @@ export const uploadToGridFS = async (
     documentId?: string;
     size: number;
   }
-): Promise<ObjectId> => {
+): Promise<MongoObjectId> => {
   return new Promise((resolve, reject) => {
-    const bucket = getGridFSBucket();
-    
-    const uploadStream = bucket.openUploadStream(filename, {
-      metadata: {
-        ...metadata,
-        uploadedAt: new Date()
-      }
-    });
-
-    const readableStream = Readable.from(fileBuffer);
-    
-    readableStream.pipe(uploadStream)
-      .on('error', reject)
-      .on('finish', () => {
-        resolve(uploadStream.id as ObjectId);
+    try {
+      const bucket = getGridFSBucket();
+      
+      console.log('Starting GridFS upload for:', filename);
+      console.log('File size:', fileBuffer.length);
+      
+      const uploadStream = bucket.openUploadStream(filename, {
+        metadata: {
+          ...metadata,
+          uploadedAt: new Date()
+        }
       });
+
+      const readableStream = Readable.from(fileBuffer);
+      
+      readableStream.pipe(uploadStream)
+        .on('error', (err) => {
+          console.error('Upload stream error:', err);
+          reject(err);
+        })
+        .on('finish', () => {
+          console.log('GridFS upload complete. File ID:', uploadStream.id);
+          resolve(uploadStream.id as MongoObjectId);
+        });
+    } catch (err) {
+      console.error('GridFS upload error:', err);
+      reject(err);
+    }
   });
 };
 
 // Download file from GridFS
-export const downloadFromGridFS = async (fileId: string | ObjectId): Promise<{
+export const downloadFromGridFS = async (fileId: string | MongoObjectId): Promise<{
   stream: NodeJS.ReadableStream;
   file: any;
 }> => {
   const bucket = getGridFSBucket();
-  const objectId = typeof fileId === 'string' ? new ObjectId(fileId) : fileId;
+  const objectId = typeof fileId === 'string' ? new mongoose.mongo.ObjectId(fileId) : fileId;
   
   // Get file info
   const files = await bucket.find({ _id: objectId }).toArray();
@@ -77,16 +91,16 @@ export const downloadFromGridFS = async (fileId: string | ObjectId): Promise<{
 };
 
 // Delete file from GridFS
-export const deleteFromGridFS = async (fileId: string | ObjectId): Promise<void> => {
+export const deleteFromGridFS = async (fileId: string | MongoObjectId): Promise<void> => {
   const bucket = getGridFSBucket();
-  const objectId = typeof fileId === 'string' ? new ObjectId(fileId) : fileId;
+  const objectId = typeof fileId === 'string' ? new mongoose.mongo.ObjectId(fileId) : fileId;
   await bucket.delete(objectId);
 };
 
 // Get file info from GridFS
-export const getFileInfo = async (fileId: string | ObjectId): Promise<any | null> => {
+export const getFileInfo = async (fileId: string | MongoObjectId): Promise<any | null> => {
   const bucket = getGridFSBucket();
-  const objectId = typeof fileId === 'string' ? new ObjectId(fileId) : fileId;
+  const objectId = typeof fileId === 'string' ? new mongoose.mongo.ObjectId(fileId) : fileId;
   
   const files = await bucket.find({ _id: objectId }).toArray();
   return files.length > 0 ? files[0] : null;
