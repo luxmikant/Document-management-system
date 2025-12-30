@@ -1,23 +1,27 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { config } from './config';
 import { errorHandler, notFoundHandler } from './middleware';
 import { authRoutes, usersRoutes, documentsRoutes, versionsRoutes, tagsRoutes } from './routes';
 import { setupSwagger } from './swagger';
 
 const app = express();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // CORS configuration
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || config.allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check allowed origins
+    if (config.allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.warn(`CORS blocked origin: ${origin}`);
-      callback(null, true); // Allow anyway for development
+      // In production, you might want to block this. 
+      // For now, consistent with your previous code:
+      callback(null, true); 
     }
   },
   credentials: true,
@@ -31,14 +35,9 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded files statically (for preview)
+// Serve uploaded files statically (Only for local dev / temp preview)
+// Note: If using GridFS in prod, this might be unused, but keeping it is safe.
 app.use('/uploads', express.static(config.uploadDir));
-
-// Serve static files from client build
-const clientBuildPath = path.join(__dirname, '../../client/dist');
-if (config.nodeEnv === 'production') {
-  app.use(express.static(clientBuildPath));
-}
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -55,14 +54,37 @@ app.use('/api/documents', documentsRoutes);
 app.use('/api/versions', versionsRoutes);
 app.use('/api/tags', tagsRoutes);
 
-// Serve SPA fallback for client routes (production only)
+// --- STATIC FRONTEND SERVING (Production) ---
+
 if (config.nodeEnv === 'production') {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(clientBuildPath, 'index.html'));
+  // Correct Path Resolution:
+  // __dirname is usually .../server/dist/
+  // We go up: dist (..) -> server (..) -> root -> client -> dist -> dms-client
+  const clientBuildPath = path.resolve(__dirname, '../../client/dist/dms-client');
+
+  // 1. Serve Static Assets (JS, CSS, Images)
+  app.use(express.static(clientBuildPath));
+
+  // 2. SPA Fallback: Send index.html for any non-API route
+  app.get('*', (req, res, next) => {
+    // If the client requests an API route that doesn't exist, let it fall through to 404 handler
+    // instead of returning the HTML page.
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    
+    // Otherwise, serve the Angular app
+    res.sendFile(path.join(clientBuildPath, 'index.html'), (err) => {
+      if (err) {
+        console.error('Error serving index.html:', err);
+        res.status(500).send('Error loading frontend');
+      }
+    });
   });
 }
 
 // Error handlers
+// (These will catch any /api/* requests that didn't match a route)
 app.use(notFoundHandler);
 app.use(errorHandler);
 
