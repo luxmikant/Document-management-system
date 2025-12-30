@@ -17,17 +17,15 @@ export interface UploadProgress {
 }
 
 export interface DashboardData {
-  recentFiles: Document[];
+  recentDocuments: Document[];
   stats: {
+    totalDocuments: number;
     totalSize: number;
     avgSize: number;
-    maxSize: number;
-    minSize: number;
-    totalFiles: number;
   };
-  sizeGroups: { range: string; count: number }[];
-  typeGroups: { type: string; count: number; totalSize: number }[];
-  topTags: { tag: string; count: number }[];
+  sizeGroups: { _id: string; count: number; totalSize: number }[];
+  typeGroups: { _id: string; count: number; totalSize: number }[];
+  topTags: { _id: string; count: number }[];
 }
 
 @Injectable({
@@ -95,6 +93,30 @@ export class DocumentService {
           return { progress };
         } else if (event.type === HttpEventType.Response) {
           return { progress: 100, response: event.body! };
+        }
+        return { progress: 0 };
+      })
+    );
+  }
+
+  // Upload multiple documents (max 5)
+  uploadMultipleDocuments(files: File[], tags: string[]): Observable<UploadProgress> {
+    const formData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file);
+    });
+    formData.append('tags', JSON.stringify(tags));
+
+    return this.http.post<any>(`${this.apiUrl}/upload`, formData, {
+      reportProgress: true,
+      observe: 'events'
+    }).pipe(
+      map((event: HttpEvent<any>) => {
+        if (event.type === HttpEventType.UploadProgress) {
+          const progress = event.total ? Math.round(100 * event.loaded / event.total) : 0;
+          return { progress };
+        } else if (event.type === HttpEventType.Response) {
+          return { progress: 100, response: event.body };
         }
         return { progress: 0 };
       })
