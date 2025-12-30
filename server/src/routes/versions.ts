@@ -1,9 +1,7 @@
 import { Router, Response } from 'express';
-import path from 'path';
-import fs from 'fs';
 import { Version, DocumentModel } from '../models';
 import { AuthRequest, requireAuth } from '../middleware';
-import { config } from '../config';
+import { downloadFromGridFS } from '../services';
 
 const router = Router();
 
@@ -53,18 +51,15 @@ router.get('/:versionId/download', requireAuth, async (req: AuthRequest, res: Re
       return;
     }
 
-    const filePath = path.join(config.uploadDir, version.storageKey);
-
-    if (!fs.existsSync(filePath)) {
-      res.status(404).json({ message: 'File not found on disk', code: 'FILE_MISSING' });
-      return;
-    }
+    const { stream, file } = await downloadFromGridFS(version.gridfsFileId);
 
     res.setHeader('Content-Type', version.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(version.originalFilename)}"`);
-    res.setHeader('Content-Length', version.size);
+    if (file.length) {
+      res.setHeader('Content-Length', file.length);
+    }
 
-    fs.createReadStream(filePath).pipe(res);
+    stream.pipe(res);
   } catch (error) {
     console.error('Download version error:', error);
     res.status(500).json({ message: 'Download failed', code: 'DOWNLOAD_ERROR' });

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams, HttpEvent, HttpEventType } from '@angular/common/http';
-import { Observable, map } from 'rxjs';
+import { Observable, map, catchError, of } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import { 
   Document, 
@@ -38,7 +38,18 @@ export class DocumentService {
 
   // Get dashboard data (top 5 recent, stats, size groups)
   getDashboard(): Observable<DashboardData> {
-    return this.http.get<DashboardData>(`${this.apiUrl}/dashboard`);
+    return this.http.get<DashboardData>(`${this.apiUrl}/dashboard`).pipe(
+      catchError(() => {
+        // Return empty dashboard if unauthorized
+        return of({
+          recentDocuments: [],
+          stats: { totalDocuments: 0, totalSize: 0, avgSize: 0 },
+          sizeGroups: [],
+          typeGroups: [],
+          topTags: []
+        } as DashboardData);
+      })
+    );
   }
 
   // List/search documents with sorting
@@ -58,7 +69,9 @@ export class DocumentService {
     if (params?.sortBy) httpParams = httpParams.set('sortBy', params.sortBy);
     if (params?.order) httpParams = httpParams.set('order', params.order);
     
-    return this.http.get<DocumentListResponse>(this.apiUrl, { params: httpParams });
+    return this.http.get<DocumentListResponse>(this.apiUrl, { params: httpParams }).pipe(
+      catchError(() => of({ documents: [], pagination: { page: 1, limit: 20, total: 0, pages: 0 } } as DocumentListResponse))
+    );
   }
 
   // Get shared documents
@@ -67,7 +80,9 @@ export class DocumentService {
     if (params?.page) httpParams = httpParams.set('page', params.page.toString());
     if (params?.limit) httpParams = httpParams.set('limit', params.limit.toString());
     
-    return this.http.get<DocumentListResponse>(`${this.apiUrl}/shared`, { params: httpParams });
+    return this.http.get<DocumentListResponse>(`${this.apiUrl}/shared`, { params: httpParams }).pipe(
+      catchError(() => of({ documents: [], pagination: { page: 1, limit: 20, total: 0, pages: 0 } } as DocumentListResponse))
+    );
   }
 
   // Get document details with versions

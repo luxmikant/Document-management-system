@@ -63,9 +63,14 @@ const isOwner = (doc: IDocument, userId: string): boolean => {
 // POST /api/documents/upload - Upload multiple files (max 5)
 router.post('/upload', requireAuth, upload.array('files', 5), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    console.log('Upload request received');
+    console.log('User ID:', req.user?._id);
+    console.log('Files count:', req.files?.length);
+    
     const files = req.files as Express.Multer.File[];
     
     if (!files || files.length === 0) {
+      console.log('No files provided');
       res.status(400).json({ message: 'At least one file is required', code: 'NO_FILE' });
       return;
     }
@@ -75,7 +80,10 @@ router.post('/upload', requireAuth, upload.array('files', 5), async (req: AuthRe
       return;
     }
 
-    const { titles, description, tags } = req.body;
+    const { tags } = req.body;
+    const userId = req.user!._id;
+    
+    console.log('Tags received:', tags);
     
     // Parse tags
     let parsedTags: string[] = [];
@@ -83,88 +91,97 @@ router.post('/upload', requireAuth, upload.array('files', 5), async (req: AuthRe
       try {
         parsedTags = typeof tags === 'string' 
           ? (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim()))
-          : tags;
-      } catch {
-        parsedTags = tags.split(',').map((t: string) => t.trim());
+          : (Array.isArray(tags) ? tags : [tags]);
+      } catch (e) {
+        parsedTags = typeof tags === 'string' ? tags.split(',').map((t: string) => t.trim()) : [tags];
       }
     }
-
-    // Parse titles array
-    let titleList: string[] = [];
-    if (titles) {
-      try {
-        titleList = typeof titles === 'string'
-          ? (titles.startsWith('[') ? JSON.parse(titles) : titles.split(',').map((t: string) => t.trim()))
-          : titles;
-      } catch {
-        titleList = titles.split(',').map((t: string) => t.trim());
-      }
-    }
+    
+    parsedTags = parsedTags.filter(t => t && t.length > 0);
 
     const uploadedDocs = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const fileTitle = titleList[i] || file.originalname;
+      const fileTitle = file.originalname.replace(/\.[^/.]+$/, ''); // Remove extension for title
 
-      // Upload file to GridFS
-      const gridfsFileId = await uploadToGridFS(
-        file.buffer,
-        `${Date.now()}-${file.originalname}`,
-        {
+      try {
+        console.log(`Processing file ${i + 1}/${files.length}: ${file.originalname}`);
+        
+        // Upload file to GridFS
+        const gridfsFileId = await uploadToGridFS(
+          file.buffer,
+          `${Date.now()}-${i}-${file.originalname}`,
+          {
+            originalFilename: file.originalname,
+            mimeType: file.mimetype,
+            uploadedBy: userId.toString(),
+            size: file.size
+          }
+        );
+
+        console.log(`GridFS upload complete. File ID:`, gridfsFileId);
+
+        // Create document record
+        const document = new DocumentModel({
+          title: fileTitle,
+          description: '',
           originalFilename: file.originalname,
           mimeType: file.mimetype,
-          uploadedBy: req.user!._id.toString(),
-          size: file.size
-        }
-      );
+          size: file.size,
+          ownerId: userId,
+          tags: parsedTags,
+          currentVersionNumber: 1,
+          acl: [],
+          isDeleted: false
+        });
 
-      // Create document record
-      const document = new DocumentModel({
-        title: fileTitle,
-        description: description || '',
-        originalFilename: file.originalname,
-        mimeType: file.mimetype,
-        size: file.size,
-        ownerId: req.user!._id,
-        tags: parsedTags.filter(t => t.length > 0),
-        currentVersionNumber: 1,
-        acl: []
-      });
+        await document.save();
+        console.log(`Document saved with ID:`, document._id);
 
-      await document.save();
+        // Create initial version
+        const version = new Version({
+          documentId: document._id,
+          versionNumber: 1,
+          gridfsFileId: gridfsFileId,
+          originalFilename: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          uploadedBy: userId,
+          changeLog: 'Initial upload'
+        });
 
-      // Create initial version
-      const version = new Version({
-        documentId: document._id,
-        versionNumber: 1,
-        gridfsFileId: gridfsFileId,
-        originalFilename: file.originalname,
-        mimeType: file.mimetype,
-        size: file.size,
-        uploadedBy: req.user!._id,
-        changeLog: 'Initial upload'
-      });
+        await version.save();
+        console.log(`Version saved`);
 
-      await version.save();
-
-      uploadedDocs.push({
-        id: document._id,
-        title: document.title,
-        originalFilename: document.originalFilename,
-        mimeType: document.mimeType,
-        size: document.size,
-        tags: document.tags,
-        createdAt: document.createdAt
-      });
+        uploadedDocs.push({
+          id: document._id,
+          title: document.title,
+          originalFilename: document.originalFilename,
+          mimeType: document.mimeType,
+          size: document.size,
+          tags: document.tags,
+          createdAt: document.createdAt
+        });
+      } catch (fileError: any) {
+        console.error(`Error uploading file ${file.originalname}:`, fileError.message);
+        // Continue with next file
+      }
     }
 
+    if (uploadedDocs.length === 0) {
+      console.log('No files were successfully uploaded');
+      res.status(500).json({ message: 'Failed to upload any files', code: 'UPLOAD_ERROR' });
+      return;
+    }
+
+    console.log(`Successfully uploaded ${uploadedDocs.length} documents`);
     res.status(201).json({
       message: `${uploadedDocs.length} document(s) uploaded successfully`,
       documents: uploadedDocs
     });
   } catch (error: any) {
-    console.error('Upload error:', error);
+    console.error('Upload error:', error.message, error.stack);
     res.status(500).json({ message: error.message || 'Upload failed', code: 'UPLOAD_ERROR' });
   }
 });
@@ -215,7 +232,8 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthRequest, re
       ownerId: req.user!._id,
       tags: parsedTags.filter(t => t.length > 0),
       currentVersionNumber: 1,
-      acl: []
+      acl: [],
+      isDeleted: false
     });
 
     await document.save();
