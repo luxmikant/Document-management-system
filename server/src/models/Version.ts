@@ -4,7 +4,7 @@ export interface IVersion extends Document {
   _id: mongoose.Types.ObjectId;
   documentId: mongoose.Types.ObjectId;
   versionNumber: number;
-  storageKey: string;
+  gridfsFileId: mongoose.Types.ObjectId; // GridFS file ID
   originalFilename: string;
   mimeType: string;
   size: number;
@@ -25,8 +25,8 @@ const versionSchema = new Schema<IVersion>(
       type: Number,
       required: true
     },
-    storageKey: {
-      type: String,
+    gridfsFileId: {
+      type: Schema.Types.ObjectId,
       required: true
     },
     originalFilename: {

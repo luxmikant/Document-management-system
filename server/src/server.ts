@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import app from './app';
 import { config } from './config';
+import { initGridFS } from './services';
 
 const startServer = async () => {
   try {
@@ -9,10 +10,13 @@ const startServer = async () => {
     await mongoose.connect(config.mongodbUri);
     console.log('✅ MongoDB connected successfully');
 
+    // Initialize GridFS after MongoDB connection
+    initGridFS();
+
     // Start Express server
     app.listen(config.port, () => {
       console.log(`✅ Server running on http://localhost:${config.port}`);
-      console.log(`📁 Upload directory: ${config.uploadDir}`);
+      console.log(`📁 Files stored in: MongoDB GridFS`);
       console.log(`📦 Max file size: ${config.maxFileSize / (1024 * 1024)}MB`);
     });
   } catch (error) {
