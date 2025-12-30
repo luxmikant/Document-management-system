@@ -1,20 +1,46 @@
 import { Router, Response } from 'express';
-import path from 'path';
-import fs from 'fs';
 import mongoose from 'mongoose';
+import multer from 'multer';
 import { DocumentModel, Version, IDocument, AccessLevel } from '../models';
-import { AuthRequest, requireAuth, upload, handleMulterError } from '../middleware';
+import { AuthRequest, requireAuth } from '../middleware';
 import { config } from '../config';
+import { uploadToGridFS, downloadFromGridFS, deleteFromGridFS } from '../services';
 
 const router = Router();
 
-// Helper: Check if user can view document
+// Configure multer for memory storage (files go to GridFS, not disk)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: config.maxFileSize, // 10MB
+    files: 5 // Max 5 files at once
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimes = [
+      'application/pdf',
+      'image/png',
+      'image/jpeg',
+      'image/webp',
+      'image/gif',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+      'text/plain'
+    ];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type ${file.mimetype} not allowed`));
+    }
+  }
+});
+
+// Helper: Check if user can view document (owner OR has ACL entry)
 const canView = (doc: IDocument, userId: string): boolean => {
   if (doc.ownerId.toString() === userId) return true;
   return doc.acl.some(p => p.userId.toString() === userId);
 };
 
-// Helper: Check if user can edit document
+// Helper: Check if user can edit document (owner OR editor in ACL)
 const canEdit = (doc: IDocument, userId: string): boolean => {
   if (doc.ownerId.toString() === userId) return true;
   return doc.acl.some(p => p.userId.toString() === userId && p.access === 'editor');
@@ -27,130 +53,165 @@ const isOwner = (doc: IDocument, userId: string): boolean => {
 
 /**
  * @swagger
- * /api/documents:
+ * /api/documents/upload:
  *   post:
- *     summary: Upload a new document
+ *     summary: Upload up to 5 documents at once (stored in GridFS)
  *     tags: [Documents]
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             required:
- *               - file
- *             properties:
- *               file:
- *                 type: string
- *                 format: binary
- *                 description: The document file to upload (PDF, DOCX, PNG, JPEG, WEBP, GIF)
- *               title:
- *                 type: string
- *                 example: Q4 Report
- *               description:
- *                 type: string
- *                 example: Financial report for Q4 2024
- *               tags:
- *                 type: string
- *                 example: finance,important
- *                 description: Comma-separated tags or JSON array
- *     responses:
- *       201:
- *         description: Document uploaded successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                 document:
- *                   $ref: '#/components/schemas/Document'
- *       400:
- *         description: No file provided or invalid file type
- *       413:
- *         description: File too large (max 10MB)
- *   get:
- *     summary: List all accessible documents
- *     tags: [Documents]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: q
- *         schema:
- *           type: string
- *         description: Search query (searches title, description, tags, filename)
- *       - in: query
- *         name: tags
- *         schema:
- *           type: string
- *         description: Filter by tags (comma-separated)
- *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *           default: 1
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 20
- *     responses:
- *       200:
- *         description: List of documents
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 documents:
- *                   type: array
- *                   items:
- *                     $ref: '#/components/schemas/Document'
- *                 pagination:
- *                   type: object
- *                   properties:
- *                     page:
- *                       type: integer
- *                     limit:
- *                       type: integer
- *                     total:
- *                       type: integer
- *                     pages:
- *                       type: integer
  */
-// POST /api/documents - Upload new document
-router.post('/', requireAuth, upload.single('file'), handleMulterError, async (req: AuthRequest, res: Response): Promise<void> => {
+// POST /api/documents/upload - Upload multiple files (max 5)
+router.post('/upload', requireAuth, upload.array('files', 5), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    if (!req.file) {
-      res.status(400).json({ message: 'File is required', code: 'NO_FILE' });
+    const files = req.files as Express.Multer.File[];
+    
+    if (!files || files.length === 0) {
+      res.status(400).json({ message: 'At least one file is required', code: 'NO_FILE' });
       return;
     }
 
-    const { title, description, tags } = req.body;
+    if (files.length > 5) {
+      res.status(400).json({ message: 'Maximum 5 files allowed at once', code: 'TOO_MANY_FILES' });
+      return;
+    }
+
+    const { titles, description, tags } = req.body;
     
-    // Parse tags (can be JSON array or comma-separated string)
+    // Parse tags
     let parsedTags: string[] = [];
     if (tags) {
       try {
-        parsedTags = typeof tags === 'string' ? 
-          (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim())) 
+        parsedTags = typeof tags === 'string' 
+          ? (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim()))
           : tags;
       } catch {
         parsedTags = tags.split(',').map((t: string) => t.trim());
       }
     }
 
+    // Parse titles array
+    let titleList: string[] = [];
+    if (titles) {
+      try {
+        titleList = typeof titles === 'string'
+          ? (titles.startsWith('[') ? JSON.parse(titles) : titles.split(',').map((t: string) => t.trim()))
+          : titles;
+      } catch {
+        titleList = titles.split(',').map((t: string) => t.trim());
+      }
+    }
+
+    const uploadedDocs = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const fileTitle = titleList[i] || file.originalname;
+
+      // Upload file to GridFS
+      const gridfsFileId = await uploadToGridFS(
+        file.buffer,
+        `${Date.now()}-${file.originalname}`,
+        {
+          originalFilename: file.originalname,
+          mimeType: file.mimetype,
+          uploadedBy: req.user!._id.toString(),
+          size: file.size
+        }
+      );
+
+      // Create document record
+      const document = new DocumentModel({
+        title: fileTitle,
+        description: description || '',
+        originalFilename: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        ownerId: req.user!._id,
+        tags: parsedTags.filter(t => t.length > 0),
+        currentVersionNumber: 1,
+        acl: []
+      });
+
+      await document.save();
+
+      // Create initial version
+      const version = new Version({
+        documentId: document._id,
+        versionNumber: 1,
+        gridfsFileId: gridfsFileId,
+        originalFilename: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        uploadedBy: req.user!._id,
+        changeLog: 'Initial upload'
+      });
+
+      await version.save();
+
+      uploadedDocs.push({
+        id: document._id,
+        title: document.title,
+        originalFilename: document.originalFilename,
+        mimeType: document.mimeType,
+        size: document.size,
+        tags: document.tags,
+        createdAt: document.createdAt
+      });
+    }
+
+    res.status(201).json({
+      message: `${uploadedDocs.length} document(s) uploaded successfully`,
+      documents: uploadedDocs
+    });
+  } catch (error: any) {
+    console.error('Upload error:', error);
+    res.status(500).json({ message: error.message || 'Upload failed', code: 'UPLOAD_ERROR' });
+  }
+});
+
+// POST /api/documents - Single file upload (backward compatible)
+router.post('/', requireAuth, upload.single('file'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const file = req.file;
+    
+    if (!file) {
+      res.status(400).json({ message: 'File is required', code: 'NO_FILE' });
+      return;
+    }
+
+    const { title, description, tags } = req.body;
+    
+    // Parse tags
+    let parsedTags: string[] = [];
+    if (tags) {
+      try {
+        parsedTags = typeof tags === 'string' 
+          ? (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim()))
+          : tags;
+      } catch {
+        parsedTags = tags.split(',').map((t: string) => t.trim());
+      }
+    }
+
+    // Upload file to GridFS
+    const gridfsFileId = await uploadToGridFS(
+      file.buffer,
+      `${Date.now()}-${file.originalname}`,
+      {
+        originalFilename: file.originalname,
+        mimeType: file.mimetype,
+        uploadedBy: req.user!._id.toString(),
+        size: file.size
+      }
+    );
+
     // Create document record
     const document = new DocumentModel({
-      title: title || req.file.originalname,
+      title: title || file.originalname,
       description: description || '',
-      originalFilename: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
+      originalFilename: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
       ownerId: req.user!._id,
       tags: parsedTags.filter(t => t.length > 0),
       currentVersionNumber: 1,
@@ -163,10 +224,10 @@ router.post('/', requireAuth, upload.single('file'), handleMulterError, async (r
     const version = new Version({
       documentId: document._id,
       versionNumber: 1,
-      storageKey: req.file.filename,
-      originalFilename: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
+      gridfsFileId: gridfsFileId,
+      originalFilename: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
       uploadedBy: req.user!._id,
       changeLog: 'Initial upload'
     });
@@ -187,73 +248,85 @@ router.post('/', requireAuth, upload.single('file'), handleMulterError, async (r
         createdAt: document.createdAt
       }
     });
-  } catch (error) {
-    // Clean up uploaded file on error
-    if (req.file) {
-      fs.unlink(path.join(config.uploadDir, req.file.filename), () => {});
-    }
+  } catch (error: any) {
     console.error('Upload error:', error);
-    res.status(500).json({ message: 'Upload failed', code: 'UPLOAD_ERROR' });
+    res.status(500).json({ message: error.message || 'Upload failed', code: 'UPLOAD_ERROR' });
   }
 });
 
-// GET /api/documents - List/search documents
+/**
+ * @swagger
+ * /api/documents:
+ *   get:
+ *     summary: List documents owned by current user only
+ *     tags: [Documents]
+ */
+// GET /api/documents - List user's own documents ONLY (ownership segregation)
 router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { q, tags, page = '1', limit = '20' } = req.query;
+    const { q, tags, sortBy = 'createdAt', order = 'desc', page = 1, limit = 20 } = req.query;
     const userId = req.user!._id;
 
-    const pageNum = Math.max(1, parseInt(page as string, 10));
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit as string, 10)));
-    const skip = (pageNum - 1) * limitNum;
-
-    // Build query - user must own or have access
-    const baseQuery: any = {
-      isDeleted: false,
-      $or: [
-        { ownerId: userId },
-        { 'acl.userId': userId }
-      ]
+    // Build query - ONLY show user's own documents
+    const query: any = {
+      ownerId: userId,
+      isDeleted: { $ne: true }
     };
 
-    // Text search
-    if (q && typeof q === 'string' && q.trim()) {
-      baseQuery.$text = { $search: q.trim() };
+    // Search by name/title
+    if (q && typeof q === 'string') {
+      query.$or = [
+        { title: { $regex: q, $options: 'i' } },
+        { originalFilename: { $regex: q, $options: 'i' } },
+        { description: { $regex: q, $options: 'i' } }
+      ];
     }
 
-    // Tag filter
-    if (tags) {
-      const tagList = typeof tags === 'string' ? tags.split(',').map(t => t.trim()) : tags;
-      baseQuery.tags = { $all: tagList };
+    // Filter by tags
+    if (tags && typeof tags === 'string') {
+      const tagList = tags.split(',').map(t => t.trim()).filter(t => t);
+      if (tagList.length > 0) {
+        query.tags = { $in: tagList };
+      }
     }
+
+    // Sorting
+    const sortField = ['size', 'createdAt', 'title', 'updatedAt'].includes(sortBy as string) 
+      ? sortBy as string 
+      : 'createdAt';
+    const sortOrder = order === 'asc' ? 1 : -1;
+
+    const skip = (Number(page) - 1) * Number(limit);
 
     const [documents, total] = await Promise.all([
-      DocumentModel.find(baseQuery)
-        .populate('ownerId', 'email firstName lastName')
-        .sort({ updatedAt: -1 })
+      DocumentModel.find(query)
+        .sort({ [sortField]: sortOrder })
         .skip(skip)
-        .limit(limitNum)
+        .limit(Number(limit))
+        .populate('ownerId', 'firstName lastName email')
         .lean(),
-      DocumentModel.countDocuments(baseQuery)
+      DocumentModel.countDocuments(query)
     ]);
 
-    // Add permission info to each document
-    const docsWithAccess = documents.map(doc => ({
-      ...doc,
-      id: doc._id,
-      isOwner: doc.ownerId._id?.toString() === userId.toString(),
-      access: doc.ownerId._id?.toString() === userId.toString() 
-        ? 'owner' 
-        : doc.acl.find(p => p.userId.toString() === userId.toString())?.access || 'viewer'
-    }));
-
     res.json({
-      documents: docsWithAccess,
+      documents: documents.map(doc => ({
+        id: doc._id,
+        title: doc.title,
+        description: doc.description,
+        originalFilename: doc.originalFilename,
+        mimeType: doc.mimeType,
+        size: doc.size,
+        tags: doc.tags,
+        currentVersionNumber: doc.currentVersionNumber,
+        owner: doc.ownerId,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt
+      })),
       pagination: {
-        page: pageNum,
-        limit: limitNum,
+        page: Number(page),
+        limit: Number(limit),
         total,
-        pages: Math.ceil(total / limitNum)
+        pages: Math.ceil(total / Number(limit))
       }
     });
   } catch (error) {
@@ -262,26 +335,207 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
   }
 });
 
+/**
+ * @swagger
+ * /api/documents/dashboard:
+ *   get:
+ *     summary: Get dashboard data (top 5 recent files, size stats)
+ *     tags: [Documents]
+ */
+// GET /api/documents/dashboard - Dashboard with top 5 recent, size grouping
+router.get('/dashboard', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!._id;
+
+    // Top 5 recently uploaded
+    const recentFiles = await DocumentModel.find({
+      ownerId: userId,
+      isDeleted: { $ne: true }
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+
+    // Size statistics
+    const sizeStats = await DocumentModel.aggregate([
+      { $match: { ownerId: userId, isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: null,
+          totalSize: { $sum: '$size' },
+          avgSize: { $avg: '$size' },
+          maxSize: { $max: '$size' },
+          minSize: { $min: '$size' },
+          totalFiles: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Group by size ranges
+    const sizeGroups = await DocumentModel.aggregate([
+      { $match: { ownerId: userId, isDeleted: { $ne: true } } },
+      {
+        $bucket: {
+          groupBy: '$size',
+          boundaries: [0, 102400, 1048576, 5242880, 10485760, Infinity], // 0, 100KB, 1MB, 5MB, 10MB
+          default: 'Large',
+          output: {
+            count: { $sum: 1 },
+            files: { $push: { title: '$title', size: '$size' } }
+          }
+        }
+      }
+    ]);
+
+    // Group by file type
+    const typeGroups = await DocumentModel.aggregate([
+      { $match: { ownerId: userId, isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: '$mimeType',
+          count: { $sum: 1 },
+          totalSize: { $sum: '$size' }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    // Group by tags
+    const tagGroups = await DocumentModel.aggregate([
+      { $match: { ownerId: userId, isDeleted: { $ne: true } } },
+      { $unwind: '$tags' },
+      {
+        $group: {
+          _id: '$tags',
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]);
+
+    res.json({
+      recentFiles: recentFiles.map(doc => ({
+        id: doc._id,
+        title: doc.title,
+        originalFilename: doc.originalFilename,
+        mimeType: doc.mimeType,
+        size: doc.size,
+        tags: doc.tags,
+        createdAt: doc.createdAt
+      })),
+      stats: sizeStats[0] || {
+        totalSize: 0,
+        avgSize: 0,
+        maxSize: 0,
+        minSize: 0,
+        totalFiles: 0
+      },
+      sizeGroups: sizeGroups.map(g => ({
+        range: g._id === 0 ? '0-100KB' :
+               g._id === 102400 ? '100KB-1MB' :
+               g._id === 1048576 ? '1MB-5MB' :
+               g._id === 5242880 ? '5MB-10MB' : '10MB+',
+        count: g.count
+      })),
+      typeGroups: typeGroups.map(g => ({
+        type: g._id,
+        count: g.count,
+        totalSize: g.totalSize
+      })),
+      topTags: tagGroups.map(g => ({
+        tag: g._id,
+        count: g.count
+      }))
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ message: 'Failed to get dashboard data', code: 'DASHBOARD_ERROR' });
+  }
+});
+
+// GET /api/documents/shared - Documents shared with me
+router.get('/shared', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!._id;
+    const { page = 1, limit = 20 } = req.query;
+
+    const query = {
+      'acl.userId': userId,
+      isDeleted: { $ne: true }
+    };
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [documents, total] = await Promise.all([
+      DocumentModel.find(query)
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .populate('ownerId', 'firstName lastName email')
+        .lean(),
+      DocumentModel.countDocuments(query)
+    ]);
+
+    res.json({
+      documents: documents.map(doc => {
+        const userAccess = doc.acl.find(p => p.userId.toString() === userId.toString());
+        return {
+          id: doc._id,
+          title: doc.title,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+          size: doc.size,
+          tags: doc.tags,
+          owner: doc.ownerId,
+          myAccess: userAccess?.access || 'viewer',
+          createdAt: doc.createdAt,
+          updatedAt: doc.updatedAt
+        };
+      }),
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total,
+        pages: Math.ceil(total / Number(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Shared documents error:', error);
+    res.status(500).json({ message: 'Failed to list shared documents', code: 'SHARED_ERROR' });
+  }
+});
+
 // GET /api/documents/:id - Get document details
 router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const document = await DocumentModel.findById(req.params.id)
-      .populate('ownerId', 'email firstName lastName')
-      .populate('acl.userId', 'email firstName lastName');
+    const { id } = req.params;
+    const userId = req.user!._id.toString();
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid document ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id)
+      .populate('ownerId', 'firstName lastName email')
+      .populate('acl.userId', 'firstName lastName email');
 
     if (!document || document.isDeleted) {
       res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
       return;
     }
 
-    if (!canView(document, req.user!._id.toString())) {
+    if (!canView(document, userId)) {
       res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
       return;
     }
 
-    const versions = await Version.find({ documentId: document._id })
-      .populate('uploadedBy', 'email firstName lastName')
-      .sort({ versionNumber: -1 });
+    // Get versions
+    const versions = await Version.find({ documentId: id })
+      .sort({ versionNumber: -1 })
+      .populate('uploadedBy', 'firstName lastName email')
+      .lean();
 
     res.json({
       document: {
@@ -295,12 +549,21 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
         currentVersionNumber: document.currentVersionNumber,
         owner: document.ownerId,
         acl: document.acl,
-        isOwner: isOwner(document, req.user!._id.toString()),
-        canEdit: canEdit(document, req.user!._id.toString()),
+        isOwner: isOwner(document, userId),
+        canEdit: canEdit(document, userId),
         createdAt: document.createdAt,
         updatedAt: document.updatedAt
       },
-      versions
+      versions: versions.map(v => ({
+        id: v._id,
+        versionNumber: v.versionNumber,
+        originalFilename: v.originalFilename,
+        mimeType: v.mimeType,
+        size: v.size,
+        uploadedBy: v.uploadedBy,
+        changeLog: v.changeLog,
+        createdAt: v.createdAt
+      }))
     });
   } catch (error) {
     console.error('Get document error:', error);
@@ -308,35 +571,172 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
   }
 });
 
-// PUT /api/documents/:id - Update document metadata
-router.put('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+// GET /api/documents/:id/download - Download document from GridFS
+router.get('/:id/download', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const document = await DocumentModel.findById(req.params.id);
+    const { id } = req.params;
+    const { version } = req.query;
+    const userId = req.user!._id.toString();
 
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid document ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id);
     if (!document || document.isDeleted) {
       res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
       return;
     }
 
-    if (!canEdit(document, req.user!._id.toString())) {
-      res.status(403).json({ message: 'Edit access denied', code: 'FORBIDDEN' });
+    if (!canView(document, userId)) {
+      res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
       return;
     }
 
+    // Get specific version or latest
+    const versionQuery: any = { documentId: id };
+    if (version) {
+      versionQuery.versionNumber = Number(version);
+    }
+
+    const versionDoc = await Version.findOne(versionQuery)
+      .sort({ versionNumber: -1 });
+
+    if (!versionDoc) {
+      res.status(404).json({ message: 'Version not found', code: 'VERSION_NOT_FOUND' });
+      return;
+    }
+
+    // Download from GridFS
+    const { stream, file } = await downloadFromGridFS(versionDoc.gridfsFileId);
+
+    res.set({
+      'Content-Type': versionDoc.mimeType,
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(versionDoc.originalFilename)}"`,
+      'Content-Length': file.length
+    });
+
+    stream.pipe(res);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ message: 'Download failed', code: 'DOWNLOAD_ERROR' });
+  }
+});
+
+// POST /api/documents/:id/version - Upload new version
+router.post('/:id/version', requireAuth, upload.single('file'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!._id.toString();
+    const file = req.file;
+
+    if (!file) {
+      res.status(400).json({ message: 'File is required', code: 'NO_FILE' });
+      return;
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid document ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id);
+    if (!document || document.isDeleted) {
+      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
+      return;
+    }
+
+    if (!canEdit(document, userId)) {
+      res.status(403).json({ message: 'Edit access required', code: 'FORBIDDEN' });
+      return;
+    }
+
+    const { changeLog } = req.body;
+    const newVersionNumber = document.currentVersionNumber + 1;
+
+    // Upload to GridFS
+    const gridfsFileId = await uploadToGridFS(
+      file.buffer,
+      `${Date.now()}-v${newVersionNumber}-${file.originalname}`,
+      {
+        originalFilename: file.originalname,
+        mimeType: file.mimetype,
+        uploadedBy: userId,
+        documentId: id,
+        size: file.size
+      }
+    );
+
+    // Create version record
+    const version = new Version({
+      documentId: id,
+      versionNumber: newVersionNumber,
+      gridfsFileId: gridfsFileId,
+      originalFilename: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      uploadedBy: req.user!._id,
+      changeLog: changeLog || `Version ${newVersionNumber}`
+    });
+
+    await version.save();
+
+    // Update document
+    document.currentVersionNumber = newVersionNumber;
+    document.mimeType = file.mimetype;
+    document.size = file.size;
+    document.originalFilename = file.originalname;
+    await document.save();
+
+    res.status(201).json({
+      message: 'New version uploaded',
+      version: {
+        id: version._id,
+        versionNumber: version.versionNumber,
+        originalFilename: version.originalFilename,
+        size: version.size,
+        changeLog: version.changeLog,
+        createdAt: version.createdAt
+      }
+    });
+  } catch (error) {
+    console.error('Version upload error:', error);
+    res.status(500).json({ message: 'Version upload failed', code: 'VERSION_UPLOAD_ERROR' });
+  }
+});
+
+// PUT /api/documents/:id - Update document metadata
+router.put('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!._id.toString();
     const { title, description, tags } = req.body;
 
-    if (title) document.title = title;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid document ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id);
+    if (!document || document.isDeleted) {
+      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
+      return;
+    }
+
+    if (!canEdit(document, userId)) {
+      res.status(403).json({ message: 'Edit access required', code: 'FORBIDDEN' });
+      return;
+    }
+
+    // Update fields
+    if (title !== undefined) document.title = title;
     if (description !== undefined) document.description = description;
-    if (tags) {
-      let parsedTags: string[] = [];
-      try {
-        parsedTags = typeof tags === 'string' ? 
-          (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim())) 
-          : tags;
-      } catch {
-        parsedTags = tags.split(',').map((t: string) => t.trim());
-      }
-      document.tags = parsedTags.filter(t => t.length > 0);
+    if (tags !== undefined) {
+      const parsedTags = typeof tags === 'string'
+        ? (tags.startsWith('[') ? JSON.parse(tags) : tags.split(',').map((t: string) => t.trim()))
+        : tags;
+      document.tags = parsedTags.filter((t: string) => t.length > 0);
     }
 
     await document.save();
@@ -353,159 +753,34 @@ router.put('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
     });
   } catch (error) {
     console.error('Update document error:', error);
-    res.status(500).json({ message: 'Failed to update document', code: 'UPDATE_ERROR' });
+    res.status(500).json({ message: 'Update failed', code: 'UPDATE_ERROR' });
   }
 });
 
-// POST /api/documents/:id/version - Upload new version
-router.post('/:id/version', requireAuth, upload.single('file'), handleMulterError, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const document = await DocumentModel.findById(req.params.id);
-
-    if (!document || document.isDeleted) {
-      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
-      return;
-    }
-
-    if (!canEdit(document, req.user!._id.toString())) {
-      res.status(403).json({ message: 'Edit access denied', code: 'FORBIDDEN' });
-      return;
-    }
-
-    if (!req.file) {
-      res.status(400).json({ message: 'File is required', code: 'NO_FILE' });
-      return;
-    }
-
-    const { changeLog } = req.body;
-
-    // Increment version
-    document.currentVersionNumber += 1;
-    document.mimeType = req.file.mimetype;
-    document.size = req.file.size;
-    document.originalFilename = req.file.originalname;
-
-    await document.save();
-
-    // Create new version record
-    const version = new Version({
-      documentId: document._id,
-      versionNumber: document.currentVersionNumber,
-      storageKey: req.file.filename,
-      originalFilename: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      uploadedBy: req.user!._id,
-      changeLog: changeLog || `Version ${document.currentVersionNumber}`
-    });
-
-    await version.save();
-
-    res.status(201).json({
-      message: 'New version uploaded',
-      version: {
-        id: version._id,
-        versionNumber: version.versionNumber,
-        originalFilename: version.originalFilename,
-        size: version.size,
-        createdAt: version.createdAt
-      }
-    });
-  } catch (error) {
-    // Clean up uploaded file on error
-    if (req.file) {
-      fs.unlink(path.join(config.uploadDir, req.file.filename), () => {});
-    }
-    console.error('Version upload error:', error);
-    res.status(500).json({ message: 'Version upload failed', code: 'VERSION_ERROR' });
-  }
-});
-
-// GET /api/documents/:id/versions - List document versions
-router.get('/:id/versions', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const document = await DocumentModel.findById(req.params.id);
-
-    if (!document || document.isDeleted) {
-      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
-      return;
-    }
-
-    if (!canView(document, req.user!._id.toString())) {
-      res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-      return;
-    }
-
-    const versions = await Version.find({ documentId: document._id })
-      .populate('uploadedBy', 'email firstName lastName')
-      .sort({ versionNumber: -1 });
-
-    res.json({ versions });
-  } catch (error) {
-    console.error('List versions error:', error);
-    res.status(500).json({ message: 'Failed to list versions', code: 'VERSIONS_ERROR' });
-  }
-});
-
-// GET /api/documents/:id/download - Download latest version
-router.get('/:id/download', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const document = await DocumentModel.findById(req.params.id);
-
-    if (!document || document.isDeleted) {
-      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
-      return;
-    }
-
-    if (!canView(document, req.user!._id.toString())) {
-      res.status(403).json({ message: 'Access denied', code: 'FORBIDDEN' });
-      return;
-    }
-
-    const latestVersion = await Version.findOne({ 
-      documentId: document._id, 
-      versionNumber: document.currentVersionNumber 
-    });
-
-    if (!latestVersion) {
-      res.status(404).json({ message: 'File not found', code: 'FILE_NOT_FOUND' });
-      return;
-    }
-
-    const filePath = path.join(config.uploadDir, latestVersion.storageKey);
-
-    if (!fs.existsSync(filePath)) {
-      res.status(404).json({ message: 'File not found on disk', code: 'FILE_MISSING' });
-      return;
-    }
-
-    res.setHeader('Content-Type', latestVersion.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(latestVersion.originalFilename)}"`);
-    res.setHeader('Content-Length', latestVersion.size);
-
-    fs.createReadStream(filePath).pipe(res);
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ message: 'Download failed', code: 'DOWNLOAD_ERROR' });
-  }
-});
-
-// DELETE /api/documents/:id - Soft delete document (owner only)
+// DELETE /api/documents/:id - Soft delete document
 router.delete('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const document = await DocumentModel.findById(req.params.id);
+    const { id } = req.params;
+    const userId = req.user!._id.toString();
 
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid document ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id);
     if (!document || document.isDeleted) {
       res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
       return;
     }
 
-    // Only owner or admin can delete
-    if (!isOwner(document, req.user!._id.toString()) && req.user!.role !== 'admin') {
+    // Only owner can delete
+    if (!isOwner(document, userId)) {
       res.status(403).json({ message: 'Only owner can delete', code: 'FORBIDDEN' });
       return;
     }
 
+    // Soft delete
     document.isDeleted = true;
     document.deletedAt = new Date();
     await document.save();
@@ -517,123 +792,82 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res: Response): Prom
   }
 });
 
-// === PERMISSIONS ROUTES ===
-
-// GET /api/documents/:id/permissions - Get document permissions
-router.get('/:id/permissions', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const document = await DocumentModel.findById(req.params.id)
-      .populate('acl.userId', 'email firstName lastName');
-
-    if (!document || document.isDeleted) {
-      res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
-      return;
-    }
-
-    if (!isOwner(document, req.user!._id.toString())) {
-      res.status(403).json({ message: 'Only owner can view permissions', code: 'FORBIDDEN' });
-      return;
-    }
-
-    res.json({
-      ownerId: document.ownerId,
-      acl: document.acl
-    });
-  } catch (error) {
-    console.error('Get permissions error:', error);
-    res.status(500).json({ message: 'Failed to get permissions', code: 'PERMISSIONS_ERROR' });
-  }
-});
-
 // POST /api/documents/:id/permissions - Add permission
 router.post('/:id/permissions', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { userId, access } = req.body;
+    const { id } = req.params;
+    const userId = req.user!._id.toString();
+    const { userId: targetUserId, access } = req.body;
 
-    if (!userId || !access) {
-      res.status(400).json({ message: 'userId and access required', code: 'MISSING_FIELDS' });
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      res.status(400).json({ message: 'Invalid ID', code: 'INVALID_ID' });
       return;
     }
 
-    if (!['viewer', 'editor'].includes(access)) {
-      res.status(400).json({ message: 'Access must be viewer or editor', code: 'INVALID_ACCESS' });
-      return;
-    }
-
-    const document = await DocumentModel.findById(req.params.id);
-
+    const document = await DocumentModel.findById(id);
     if (!document || document.isDeleted) {
       res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
       return;
     }
 
-    if (!isOwner(document, req.user!._id.toString())) {
+    // Only owner can manage permissions
+    if (!isOwner(document, userId)) {
       res.status(403).json({ message: 'Only owner can manage permissions', code: 'FORBIDDEN' });
       return;
     }
 
-    // Can't add owner to ACL
-    if (document.ownerId.toString() === userId) {
-      res.status(400).json({ message: 'Cannot add owner to ACL', code: 'OWNER_ACL' });
-      return;
-    }
-
-    // Check if user already in ACL
-    const existingIndex = document.acl.findIndex(p => p.userId.toString() === userId);
-    
+    // Check if already has permission
+    const existingIndex = document.acl.findIndex(p => p.userId.toString() === targetUserId);
     if (existingIndex >= 0) {
-      // Update existing permission
       document.acl[existingIndex].access = access as AccessLevel;
     } else {
-      // Add new permission
       document.acl.push({
-        userId: new mongoose.Types.ObjectId(userId),
+        userId: new mongoose.Types.ObjectId(targetUserId),
         access: access as AccessLevel
       });
     }
 
     await document.save();
 
-    // Return updated ACL
-    const updatedDoc = await DocumentModel.findById(req.params.id)
-      .populate('acl.userId', 'email firstName lastName');
-
     res.json({
-      message: 'Permission added',
-      acl: updatedDoc?.acl
+      message: 'Permission updated',
+      acl: document.acl
     });
   } catch (error) {
     console.error('Add permission error:', error);
-    res.status(500).json({ message: 'Failed to add permission', code: 'PERMISSION_ERROR' });
+    res.status(500).json({ message: 'Failed to update permission', code: 'PERMISSION_ERROR' });
   }
 });
 
 // DELETE /api/documents/:id/permissions/:userId - Remove permission
-router.delete('/:id/permissions/:userId', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+router.delete('/:id/permissions/:targetUserId', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const document = await DocumentModel.findById(req.params.id);
+    const { id, targetUserId } = req.params;
+    const userId = req.user!._id.toString();
 
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      res.status(400).json({ message: 'Invalid ID', code: 'INVALID_ID' });
+      return;
+    }
+
+    const document = await DocumentModel.findById(id);
     if (!document || document.isDeleted) {
       res.status(404).json({ message: 'Document not found', code: 'NOT_FOUND' });
       return;
     }
 
-    if (!isOwner(document, req.user!._id.toString())) {
+    if (!isOwner(document, userId)) {
       res.status(403).json({ message: 'Only owner can manage permissions', code: 'FORBIDDEN' });
       return;
     }
 
-    const originalLength = document.acl.length;
-    document.acl = document.acl.filter(p => p.userId.toString() !== req.params.userId);
-
-    if (document.acl.length === originalLength) {
-      res.status(404).json({ message: 'Permission not found', code: 'PERMISSION_NOT_FOUND' });
-      return;
-    }
-
+    document.acl = document.acl.filter(p => p.userId.toString() !== targetUserId);
     await document.save();
 
-    res.json({ message: 'Permission removed' });
+    res.json({
+      message: 'Permission removed',
+      acl: document.acl
+    });
   } catch (error) {
     console.error('Remove permission error:', error);
     res.status(500).json({ message: 'Failed to remove permission', code: 'PERMISSION_ERROR' });
